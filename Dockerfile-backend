@@ -1,0 +1,71 @@
+FROM node:20.17.0-alpine3.20 AS development
+
+RUN apk add --no-cache --update \
+            python3 \
+            make \
+            g++ \
+            krb5-dev && \
+    rm -rf /tmp/* /var/tmp/*
+
+WORKDIR /app
+
+ARG TYPE_SERVER
+ENV TYPE_SERVER="$TYPE_SERVER"
+
+COPY --chown=node:node $TYPE_SERVER/package*.json ./
+RUN npm install
+RUN npm ci
+
+USER node
+
+FROM node:20.17.0-alpine3.20 AS build
+
+RUN apk add --no-cache --update \
+            python3 \
+            make \
+            g++ \
+            krb5-dev && \
+    rm -rf /tmp/* /var/tmp/* 
+
+WORKDIR /app
+
+ARG TYPE_SERVER
+ENV TYPE_SERVER="$TYPE_SERVER"
+
+
+COPY --chown=node:node $TYPE_SERVER/package*.json ./$TYPE_SERVER/
+COPY --chown=node:node --from=development /app/node_modules ./$TYPE_SERVER/node_modules
+COPY --chown=node:node $TYPE_SERVER ./$TYPE_SERVER
+COPY --chown=node:node shared ./shared
+
+WORKDIR /app/$TYPE_SERVER
+RUN npm run build
+
+ARG SENTRY_AUTH_TOKEN
+ENV SENTRY_AUTH_TOKEN="$SENTRY_AUTH_TOKEN"
+RUN npm run sentry:sourcemaps
+
+ENV NODE_ENV=production 
+
+RUN npm install
+RUN npm ci --only=production && npm cache clean --force
+
+USER node
+
+FROM node:20.17.0-alpine3.20 AS production
+
+ARG TYPE_SERVER
+ENV TYPE_SERVER="$TYPE_SERVER"
+
+WORKDIR /app
+
+COPY --chown=node:node --from=build /app/$TYPE_SERVER/node_modules ./$TYPE_SERVER/node_modules
+COPY --chown=node:node --from=build /app/$TYPE_SERVER/dist ./$TYPE_SERVER/dist
+COPY --chown=node:node shared ./shared
+
+WORKDIR /app/$TYPE_SERVER
+
+EXPOSE 3002
+USER node
+
+CMD [ "node", "dist/main.js" ]
